@@ -105,13 +105,11 @@ class DockerDriver(driver.ComputeDriver):
 
     def plug_vifs(self, instance, network_info):
         """Plug VIFs into networks."""
-        msg = _("VIF plugging is not supported by the Docker driver.")
-        raise NotImplementedError(msg)
+        pass
 
     def unplug_vifs(self, instance, network_info):
         """Unplug VIFs from networks."""
-        msg = _("VIF unplugging is not supported by the Docker driver.")
-        raise NotImplementedError(msg)
+        pass
 
     def find_container_by_name(self, name):
         for info in self.list_instances(inspect=True):
@@ -304,13 +302,14 @@ class DockerDriver(driver.ComputeDriver):
             raise exception.InstanceDeployFailure(msg.format(fmt),
                 instance_id=instance['name'])
         registry_port = self._get_registry_port()
-        return '{0}:{1}/{2}'.format(CONF.my_ip,
+        return '{0}:{1}/{2}'.format('docker-registry.melicloud.com',
                                     registry_port,
                                     image['name'])
 
     def _get_default_cmd(self, image_name):
         default_cmd = ['sh']
         info = self.docker.inspect_image(image_name)
+        LOG.info(_('1# INFO AS IS ES %s'), info)
         if not info:
             return default_cmd
         if not info['container_config']['Cmd']:
@@ -324,9 +323,9 @@ class DockerDriver(driver.ComputeDriver):
             'Image': image_name,
             'Memory': self._get_memory_limit_bytes(instance)
         }
-        default_cmd = self._get_default_cmd(image_name)
-        if default_cmd:
-            args['Cmd'] = default_cmd
+        #default_cmd = self._get_default_cmd(image_name)
+        #if default_cmd:
+        #    args['Cmd'] = default_cmd
         container_id = self.docker.create_container(args)
         if not container_id:
             msg = _('Image name "{0}" does not exist, fetching it...')
@@ -336,6 +335,10 @@ class DockerDriver(driver.ComputeDriver):
                 raise exception.InstanceDeployFailure(
                     _('Cannot pull missing image'),
                     instance_id=instance['name'])
+            #HACKME - increible trae el cmd antes que la imagen
+            default_cmd = self._get_default_cmd(image_name)
+            if default_cmd:
+                args['Cmd'] = default_cmd
             container_id = self.docker.create_container(args)
             if not container_id:
                 raise exception.InstanceDeployFailure(
@@ -436,15 +439,20 @@ class DockerDriver(driver.ComputeDriver):
         (image_service, image_id) = glance.get_remote_image_service(
             context, image_href)
         image = image_service.show(context, image_id)
+        LOG.info(_('2# IMAGE VALE %s'), image)
         registry_port = self._get_registry_port()
         name = image['name']
+        LOG.info(_('3# NAME VALE %s'), name)
         default_tag = (':' not in name)
-        name = '{0}:{1}/{2}'.format(CONF.my_ip,
+        name = '{0}:{1}/{2}'.format('docker-registry.melicloud.com',
                                     registry_port,
                                     name)
+        LOG.info(_('4# NAME VALE %s'), name)
         commit_name = name if not default_tag else name + ':latest'
+        LOG.info(_('5# COMMIT_NAME VALE %s'), commit_name)
         self.docker.commit_container(container_id, commit_name)
         update_task_state(task_state=task_states.IMAGE_UPLOADING,
                           expected_state=task_states.IMAGE_PENDING_UPLOAD)
         headers = {'X-Meta-Glance-Image-Id': image_href}
+        LOG.info(_('6# HEADERS %s'), headers)
         self.docker.push_repository(name, headers=headers)
