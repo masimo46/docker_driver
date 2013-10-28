@@ -302,6 +302,7 @@ class DockerDriver(driver.ComputeDriver):
             raise exception.InstanceDeployFailure(msg.format(fmt),
                 instance_id=instance['name'])
         registry_port = self._get_registry_port()
+#        return '{0}:{1}/{2}'.format(CONF.my_ip,
         return '{0}:{1}/{2}'.format('docker-registry.melicloud.com',
                                     registry_port,
                                     image['name'])
@@ -309,11 +310,15 @@ class DockerDriver(driver.ComputeDriver):
     def _get_default_cmd(self, image_name):
         default_cmd = ['sh']
         info = self.docker.inspect_image(image_name)
-        LOG.info(_('1# INFO AS IS ES %s'), info)
+        LOG.info(_('CLOUDBUILDERS INFO EN DEFAULT CMD AS IS ES %s'), info)
         if not info:
             return default_cmd
+        LOG.info(_('CLOUDBUILDERS INFO CONTAINER CONFIG CMD AS IS ES %s'), info['container_config']['Cmd'])
         if not info['container_config']['Cmd']:
             return default_cmd
+        else:
+            default_cmd = info['container_config']['Cmd']
+        return default_cmd
 
     def spawn(self, context, instance, image_meta, injected_files,
               admin_password, network_info=None, block_device_info=None):
@@ -337,6 +342,7 @@ class DockerDriver(driver.ComputeDriver):
                     instance_id=instance['name'])
             #HACKME - increible trae el cmd antes que la imagen
             default_cmd = self._get_default_cmd(image_name)
+            LOG.info(_('CLOUDBUILDERS CMD DEL SPAWN %s'), default_cmd)
             if default_cmd:
                 args['Cmd'] = default_cmd
             container_id = self.docker.create_container(args)
@@ -439,20 +445,15 @@ class DockerDriver(driver.ComputeDriver):
         (image_service, image_id) = glance.get_remote_image_service(
             context, image_href)
         image = image_service.show(context, image_id)
-        LOG.info(_('2# IMAGE VALE %s'), image)
         registry_port = self._get_registry_port()
         name = image['name']
-        LOG.info(_('3# NAME VALE %s'), name)
         default_tag = (':' not in name)
         name = '{0}:{1}/{2}'.format('docker-registry.melicloud.com',
                                     registry_port,
                                     name)
-        LOG.info(_('4# NAME VALE %s'), name)
         commit_name = name if not default_tag else name + ':latest'
-        LOG.info(_('5# COMMIT_NAME VALE %s'), commit_name)
         self.docker.commit_container(container_id, commit_name)
         update_task_state(task_state=task_states.IMAGE_UPLOADING,
                           expected_state=task_states.IMAGE_PENDING_UPLOAD)
         headers = {'X-Meta-Glance-Image-Id': image_href}
-        LOG.info(_('6# HEADERS %s'), headers)
         self.docker.push_repository(name, headers=headers)
