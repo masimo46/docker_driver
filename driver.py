@@ -23,6 +23,7 @@ A Docker Hypervisor which allows running Linux Containers instead of VMs.
 import re 
 from nova.openstack.common import processutils
 from nova.network import neutronv2
+import netaddr
 # end
 
 import os
@@ -245,7 +246,7 @@ class DockerDriver(driver.ComputeDriver):
         rand = random.randint(0, 100000)
         if_local_name = 'pvnetl{0}'.format(rand)
         if_remote_name = 'pvnetr{0}'.format(rand)
-        vlan_id = self._find_vlan_id(network_info['id'], "cloudbuilders", context)
+        vlan_id = self._find_vlan_id(network_info['id'], network_info['meta']['tenant_id'], context)
         ip = self._find_fixed_ip(network_info['subnets'])
 
         if not ip:
@@ -253,8 +254,9 @@ class DockerDriver(driver.ComputeDriver):
         undo_mgr = utils.UndoManager()
 
         gateway = network_info['subnets'][0]['gateway']['address']
+        cidr = netaddr.IPNetwork(network_info['subnets'][0]['cidr'])
         bridge = network_info['bridge']
-
+        
         try:
             utils.execute(
                 'ip', 'link', 'add', 'name', if_local_name, 'type',
@@ -272,7 +274,7 @@ class DockerDriver(driver.ComputeDriver):
                 run_as_root=True)
             utils.execute(
                 'ip', 'netns', 'exec', container_id, 'ifconfig',
-                if_remote_name, ip,'netmask', '255.255.255.0',
+                if_remote_name, ip,'netmask', cidr.netmask,
                 run_as_root=True)
             utils.execute(
                 'ip', 'netns', 'exec', container_id, 'route', 'del', 'default',
@@ -302,7 +304,6 @@ class DockerDriver(driver.ComputeDriver):
             raise exception.InstanceDeployFailure(msg.format(fmt),
                 instance_id=instance['name'])
         registry_port = self._get_registry_port()
-#        return '{0}:{1}/{2}'.format(CONF.my_ip,
         return '{0}:{1}/{2}'.format('docker-registry.melicloud.com',
                                     registry_port,
                                     image['name'])
@@ -310,10 +311,8 @@ class DockerDriver(driver.ComputeDriver):
     def _get_default_cmd(self, image_name):
         default_cmd = ['sh']
         info = self.docker.inspect_image(image_name)
-        LOG.info(_('CLOUDBUILDERS INFO EN DEFAULT CMD AS IS ES %s'), info)
         if not info:
             return default_cmd
-        LOG.info(_('CLOUDBUILDERS INFO CONTAINER CONFIG CMD AS IS ES %s'), info['container_config']['Cmd'])
         if not info['container_config']['Cmd']:
             return default_cmd
         else:
@@ -328,9 +327,6 @@ class DockerDriver(driver.ComputeDriver):
             'Image': image_name,
             'Memory': self._get_memory_limit_bytes(instance)
         }
-        #default_cmd = self._get_default_cmd(image_name)
-        #if default_cmd:
-        #    args['Cmd'] = default_cmd
         container_id = self.docker.create_container(args)
         if not container_id:
             msg = _('Image name "{0}" does not exist, fetching it...')
@@ -340,9 +336,8 @@ class DockerDriver(driver.ComputeDriver):
                 raise exception.InstanceDeployFailure(
                     _('Cannot pull missing image'),
                     instance_id=instance['name'])
-            #HACKME - increible trae el cmd antes que la imagen
+            #HACKME - trying to get cmd ok 
             default_cmd = self._get_default_cmd(image_name)
-            LOG.info(_('CLOUDBUILDERS CMD DEL SPAWN %s'), default_cmd)
             if default_cmd:
                 args['Cmd'] = default_cmd
             container_id = self.docker.create_container(args)
