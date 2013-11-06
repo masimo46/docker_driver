@@ -19,7 +19,7 @@
 A Docker Hypervisor which allows running Linux Containers instead of VMs.
 """
 
-# Cloudbuilders fix import
+# Cloudbuilders fix imports
 import re 
 from nova.openstack.common import processutils
 from nova.network import neutronv2
@@ -227,8 +227,28 @@ class DockerDriver(driver.ComputeDriver):
         return vlan_id
         
 
-    def _setup_network(self, context, instance, network_info):
-        container_id = self.find_container_by_name(instance['name']).get('id')
+    def _clear_vifs(self, container_id):
+        stderr=None
+        try:
+            stdout, stderr =  utils.execute('ip', 'netns', 'exec', container_id, 'ifconfig', run_as_root=True)
+        except processutils.ProcessExecutionError:
+            if stderr:
+                LOG.info(_('ERROR: %s - Triying to delete network interfaces in a namespace'), stderr)
+            else:
+                LOG.info(_('ERROR: Triying to delete network interfaces in a namespace'))
+        else:
+            LOG.info(_('LOG: STDOUT (ifconfig): %s '), stdout)
+            match = re.search(r'pvnetr\w*', stdout)
+            if match:
+                if_local = match.group()
+                if_local_name = if_local.replace("r","l")
+                LOG.info(_('LOG: Triying to delete network iface: %s '), if_local_name)
+                try:
+                    utils.execute('ovs-vsctl', 'del-port', if_local_name , run_as_root=True)
+                except processutils.ProcessExecutionError:
+                    LOG.info(_('ERROR: Triying to delete network iface running comand ovs-vsctl del-port %s'), if_local_name)
+
+    def _setup_vifs(self, context, instance, network_info, container_id):
         network_info = network_info[0]['network']
         netns_path = '/var/run/netns'
         if not os.path.exists(netns_path):
@@ -238,7 +258,6 @@ class DockerDriver(driver.ComputeDriver):
         if not nspid:
             msg = _('Cannot find any PID under container "{0}"')
             raise RuntimeError(msg.format(container_id))
-        netns_path = os.path.join(netns_path, container_id)
         utils.execute(
             'ln', '-sf', '/proc/{0}/ns/net'.format(nspid),
             '/var/run/netns/{0}'.format(container_id),
@@ -248,7 +267,6 @@ class DockerDriver(driver.ComputeDriver):
         if_remote_name = 'pvnetr{0}'.format(rand)
         vlan_id = self._find_vlan_id(network_info['id'], network_info['meta']['tenant_id'], context)
         ip = self._find_fixed_ip(network_info['subnets'])
-
         if not ip:
             raise RuntimeError(_('Cannot set fixed ip'))
         undo_mgr = utils.UndoManager()
@@ -256,7 +274,6 @@ class DockerDriver(driver.ComputeDriver):
         gateway = network_info['subnets'][0]['gateway']['address']
         cidr = netaddr.IPNetwork(network_info['subnets'][0]['cidr'])
         bridge = network_info['bridge']
-        
         try:
             utils.execute(
                 'ip', 'link', 'add', 'name', if_local_name, 'type',
@@ -288,6 +305,10 @@ class DockerDriver(driver.ComputeDriver):
         except Exception:
             msg = _('Failed to setup the network, rolling back')
             undo_mgr.rollback_and_reraise(msg=msg, instance=instance)
+
+    def _setup_network(self, context, instance, network_info):
+        container_id = self.find_container_by_name(instance['name']).get('id')
+        self._setup_vifs(context, instance, network_info, container_id)
 
     def _get_memory_limit_bytes(self, instance):
         for metadata in instance.get('system_metadata', []):
@@ -358,27 +379,7 @@ class DockerDriver(driver.ComputeDriver):
         container_id = self.find_container_by_name(instance['name']).get('id')
         if not container_id:
             return
-        # CloudBuilders fix in container ifaces deletion
-        stderr=None
-        try:
-            stdout, stderr =  utils.execute('ip', 'netns', 'exec', container_id, 'ifconfig', run_as_root=True) 
-        except processutils.ProcessExecutionError:
-            if stderr:
-                LOG.info(_('ERROR: %s - Triying to delete network interfaces in a namespace'), stderr)
-            else:
-                LOG.info(_('ERROR: Triying to delete network interfaces in a namespace'))
-        else:
-            LOG.info(_('LOG: STDOUT (ifconfig): %s '), stdout) 
-            match = re.search(r'pvnetr\w*', stdout)
-            if match:
-                if_local = match.group()
-                if_local_name = if_local.replace("r","l")
-	        LOG.info(_('LOG: Triying to delete network iface: %s '), if_local_name)
-                try:
-                    utils.execute('ovs-vsctl', 'del-port', if_local_name , run_as_root=True)
-                except processutils.ProcessExecutionError:
-                    LOG.info(_('ERROR: Triying to delete network iface running comand ovs-vsctl del-port %s'), if_local_name)
-        # fix end
+        self._clear_vifs(container_id)
         self.docker.stop_container(container_id)
         self.docker.destroy_container(container_id)
 
@@ -388,23 +389,27 @@ class DockerDriver(driver.ComputeDriver):
         container_id = self.find_container_by_name(instance['name']).get('id')
         if not container_id:
             return
+        self._clear_vifs(container_id)
         if not self.docker.stop_container(container_id):
             LOG.warning(_('Cannot stop the container, '
                           'please check docker logs'))
         if not self.docker.start_container(container_id):
             LOG.warning(_('Cannot restart the container, '
                           'please check docker logs'))
+        self._setup_vifs(context, instance, network_info, container_id)
 
     def power_on(self, context, instance, network_info, block_device_info):
         container_id = self.find_container_by_name(instance['name']).get('id')
         if not container_id:
             return
         self.docker.start_container(container_id)
+        self._setup_vifs(context, instance, network_info, container_id)
 
     def power_off(self, instance):
         container_id = self.find_container_by_name(instance['name']).get('id')
         if not container_id:
             return
+        self._clear_vifs(container_id)
         self.docker.stop_container(container_id)
 
     def get_console_output(self, instance):
